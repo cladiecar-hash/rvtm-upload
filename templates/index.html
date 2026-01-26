@@ -10,6 +10,10 @@
     <style>
         .drag-over { border-color: #3b82f6 !important; background-color: #1e3a5f !important; }
         .upload-progress { transition: width 0.3s ease; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .animate-pulse-slow { animation: pulse 2s ease-in-out infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
     </style>
 </head>
 <body class="bg-gray-900 min-h-screen">
@@ -26,10 +30,10 @@
         <!-- Upload Card -->
         <div class="bg-gray-800 rounded-xl shadow-2xl p-6 mb-6">
             <!-- Drop Zone -->
-            <div id="dropZone" 
+            <div id="dropZone"
                  class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition-colors">
                 <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
-                
+
                 <div id="uploadPrompt">
                     <i class="fas fa-cloud-upload-alt text-5xl text-gray-500 mb-4"></i>
                     <p class="text-gray-300 text-lg mb-2">Drag & Drop your RVTM Excel file here</p>
@@ -44,10 +48,10 @@
                 </div>
             </div>
 
-            <!-- Progress Bar -->
+            <!-- Progress Bar (Upload) -->
             <div id="progressContainer" class="hidden mt-4">
                 <div class="flex justify-between text-sm text-gray-400 mb-1">
-                    <span>Uploading...</span>
+                    <span id="progressLabel">Uploading...</span>
                     <span id="progressPercent">0%</span>
                 </div>
                 <div class="w-full bg-gray-700 rounded-full h-2">
@@ -55,8 +59,21 @@
                 </div>
             </div>
 
+            <!-- Processing Status -->
+            <div id="processingStatus" class="hidden mt-4">
+                <div class="bg-blue-900/30 border border-blue-500 rounded-lg p-4">
+                    <div class="flex items-center">
+                        <i class="fas fa-spinner animate-spin text-blue-400 text-2xl mr-3"></i>
+                        <div>
+                            <p class="text-blue-300 font-medium" id="processingMessage">Processing file...</p>
+                            <p class="text-blue-400/70 text-sm" id="processingTime">Elapsed: 0s</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Upload Button -->
-            <button id="uploadBtn" 
+            <button id="uploadBtn"
                     class="w-full mt-6 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg transition-colors"
                     disabled>
                 <i class="fas fa-paper-plane mr-2"></i>
@@ -70,7 +87,7 @@
                 <i class="fas fa-chart-bar mr-2"></i>
                 Analysis Result
             </h2>
-            
+
             <div id="resultSuccess" class="hidden">
                 <div class="bg-green-900/30 border border-green-500 rounded-lg p-4 mb-4">
                     <p class="text-green-400 font-medium">
@@ -114,9 +131,16 @@
         const progressContainer = document.getElementById('progressContainer');
         const progressBar = document.getElementById('progressBar');
         const progressPercent = document.getElementById('progressPercent');
+        const progressLabel = document.getElementById('progressLabel');
+        const processingStatus = document.getElementById('processingStatus');
+        const processingMessage = document.getElementById('processingMessage');
+        const processingTime = document.getElementById('processingTime');
         const resultCard = document.getElementById('resultCard');
-        
+
         let selectedFile = null;
+        let currentJobId = null;
+        let pollingInterval = null;
+        let startTime = null;
 
         // Click to browse
         dropZone.addEventListener('click', () => fileInput.click());
@@ -149,7 +173,7 @@
         function handleFile(file) {
             const validExtensions = ['.xlsx', '.xls'];
             const fileExt = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-            
+
             if (!validExtensions.includes(fileExt)) {
                 alert('Please select a valid Excel file (.xlsx or .xls)');
                 return;
@@ -162,6 +186,7 @@
             document.getElementById('fileSize').textContent = formatFileSize(file.size);
             uploadBtn.disabled = false;
             resultCard.classList.add('hidden');
+            processingStatus.classList.add('hidden');
         }
 
         function formatFileSize(bytes) {
@@ -172,20 +197,29 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
+        function formatElapsedTime(seconds) {
+            if (seconds < 60) return `${seconds}s`;
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}m ${secs}s`;
+        }
+
         // Upload
         uploadBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
 
             uploadBtn.disabled = true;
             progressContainer.classList.remove('hidden');
+            processingStatus.classList.add('hidden');
             resultCard.classList.add('hidden');
+            progressLabel.textContent = 'Uploading...';
 
             const formData = new FormData();
             formData.append('file', selectedFile);
 
             try {
                 const xhr = new XMLHttpRequest();
-                
+
                 xhr.upload.addEventListener('progress', (e) => {
                     if (e.lengthComputable) {
                         const percent = Math.round((e.loaded / e.total) * 100);
@@ -195,9 +229,6 @@
                 });
 
                 xhr.onload = function() {
-                    progressContainer.classList.add('hidden');
-                    resultCard.classList.remove('hidden');
-                    
                     let response;
                     try {
                         response = JSON.parse(xhr.responseText);
@@ -205,16 +236,26 @@
                         response = { raw: xhr.responseText };
                     }
 
-                    document.getElementById('rawResponseContent').textContent = 
-                        JSON.stringify(response, null, 2);
-
-                    if (xhr.status === 200 && response.status === 'success') {
+                    // Check if we got a job_id (async processing)
+                    if (xhr.status === 202 && response.job_id) {
+                        currentJobId = response.job_id;
+                        progressContainer.classList.add('hidden');
+                        processingStatus.classList.remove('hidden');
+                        processingMessage.textContent = response.message || 'Processing file...';
+                        startTime = Date.now();
+                        startPolling();
+                    } else if (xhr.status === 200 && response.status === 'success') {
+                        // Immediate response (small file)
+                        progressContainer.classList.add('hidden');
+                        resultCard.classList.remove('hidden');
                         showSuccess(response);
+                        uploadBtn.disabled = false;
                     } else {
+                        progressContainer.classList.add('hidden');
+                        resultCard.classList.remove('hidden');
                         showError(response.message || 'Upload failed');
+                        uploadBtn.disabled = false;
                     }
-                    
-                    uploadBtn.disabled = false;
                 };
 
                 xhr.onerror = function() {
@@ -234,9 +275,108 @@
             }
         });
 
+        function startPolling() {
+            // Update elapsed time every second
+            const timeInterval = setInterval(() => {
+                if (!startTime) {
+                    clearInterval(timeInterval);
+                    return;
+                }
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                processingTime.textContent = `Elapsed: ${formatElapsedTime(elapsed)}`;
+            }, 1000);
+
+            // Poll status every 3 seconds
+            pollingInterval = setInterval(async () => {
+                if (!currentJobId) {
+                    stopPolling();
+                    clearInterval(timeInterval);
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/status/${currentJobId}`);
+                    const data = await response.json();
+
+                    processingMessage.textContent = data.message || 'Processing...';
+
+                    if (data.status === 'completed') {
+                        stopPolling();
+                        clearInterval(timeInterval);
+                        processingStatus.classList.add('hidden');
+                        resultCard.classList.remove('hidden');
+
+                        if (data.result) {
+                            document.getElementById('rawResponseContent').textContent =
+                                JSON.stringify(data.result, null, 2);
+                            showSuccessFromResult(data.result);
+                        } else {
+                            showSuccess({ message: 'Processing completed' });
+                        }
+                        uploadBtn.disabled = false;
+                    } else if (data.status === 'error') {
+                        stopPolling();
+                        clearInterval(timeInterval);
+                        processingStatus.classList.add('hidden');
+                        resultCard.classList.remove('hidden');
+                        showError(data.message || 'Processing failed');
+                        uploadBtn.disabled = false;
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                }
+            }, 3000);
+        }
+
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+            currentJobId = null;
+            startTime = null;
+        }
+
+        function showSuccessFromResult(result) {
+            document.getElementById('resultSuccess').classList.remove('hidden');
+            document.getElementById('resultError').classList.add('hidden');
+
+            const statsGrid = document.getElementById('statsGrid');
+            statsGrid.innerHTML = '';
+
+            // Handle different response formats
+            const stats = result.stats || result.n8n_response?.stats || result;
+
+            if (stats) {
+                const statItems = [
+                    { label: 'Total Rows', value: stats.total_rows?.toLocaleString() || 'N/A', icon: 'fa-table' },
+                    { label: 'Unique L1 Requirements', value: stats.unique_L1_requirements?.toLocaleString() || 'N/A', icon: 'fa-list' },
+                    { label: 'Columns Found', value: stats.columns_found || 'N/A', icon: 'fa-columns' },
+                ];
+
+                statItems.forEach(stat => {
+                    if (stat.value !== 'N/A') {
+                        statsGrid.innerHTML += `
+                            <div class="bg-gray-700 rounded-lg p-4">
+                                <div class="flex items-center">
+                                    <i class="fas ${stat.icon} text-blue-400 mr-3"></i>
+                                    <div>
+                                        <p class="text-gray-400 text-sm">${stat.label}</p>
+                                        <p class="text-white text-xl font-semibold">${stat.value}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                });
+            }
+        }
+
         function showSuccess(response) {
             document.getElementById('resultSuccess').classList.remove('hidden');
             document.getElementById('resultError').classList.add('hidden');
+            document.getElementById('rawResponseContent').textContent =
+                JSON.stringify(response, null, 2);
 
             const statsGrid = document.getElementById('statsGrid');
             statsGrid.innerHTML = '';

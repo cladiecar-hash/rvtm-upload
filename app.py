@@ -1,8 +1,9 @@
 import os
 import uuid
+import base64
 import threading
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 import requests
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -149,9 +150,53 @@ def get_status(job_id):
 
     # Include result if completed
     if job['status'] == 'completed' and job['result']:
-        response['result'] = job['result']
+        result = job['result']
+        # Don't send base64 data in status response (too large)
+        response['result'] = {
+            k: v for k, v in result.items()
+            if k != 'file_base64'
+        }
+        # Add download URL if file is available
+        if result.get('file_base64'):
+            response['download_url'] = f'/download/{job_id}'
+            response['file_name'] = result.get('file_name', 'analysis_results.xlsx')
 
     return jsonify(response)
+
+
+@app.route('/download/<job_id>')
+def download_file(job_id):
+    """Download the result file"""
+    if job_id not in jobs:
+        return jsonify({'status': 'error', 'message': 'Job not found'}), 404
+
+    job = jobs[job_id]
+
+    if job['status'] != 'completed' or not job.get('result'):
+        return jsonify({'status': 'error', 'message': 'Job not completed yet'}), 400
+
+    result = job['result']
+
+    if not result.get('file_base64'):
+        return jsonify({'status': 'error', 'message': 'No file available'}), 404
+
+    # Decode base64 file
+    try:
+        file_data = base64.b64decode(result['file_base64'])
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Failed to decode file: {str(e)}'}), 500
+
+    file_name = result.get('file_name', 'analysis_results.xlsx')
+    mime_type = result.get('mime_type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+    return Response(
+        file_data,
+        mimetype=mime_type,
+        headers={
+            'Content-Disposition': f'attachment; filename="{file_name}"',
+            'Content-Length': len(file_data)
+        }
+    )
 
 
 @app.route('/callback/<job_id>', methods=['POST'])

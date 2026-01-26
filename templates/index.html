@@ -96,6 +96,15 @@
                     </p>
                 </div>
                 <div id="statsGrid" class="grid grid-cols-2 gap-4"></div>
+
+                <!-- Download Button -->
+                <div id="downloadSection" class="hidden mt-4">
+                    <a id="downloadBtn" href="#"
+                       class="inline-flex items-center justify-center w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors">
+                        <i class="fas fa-file-download mr-2"></i>
+                        <span id="downloadFileName">Download Results</span>
+                    </a>
+                </div>
             </div>
 
             <div id="resultError" class="hidden">
@@ -187,6 +196,7 @@
             uploadBtn.disabled = false;
             resultCard.classList.add('hidden');
             processingStatus.classList.add('hidden');
+            document.getElementById('downloadSection').classList.add('hidden');
         }
 
         function formatFileSize(bytes) {
@@ -313,6 +323,17 @@
                         } else {
                             showSuccess({ message: 'Processing completed' });
                         }
+
+                        // Show download button if file available
+                        if (data.download_url) {
+                            const downloadSection = document.getElementById('downloadSection');
+                            const downloadBtn = document.getElementById('downloadBtn');
+                            const downloadFileName = document.getElementById('downloadFileName');
+                            downloadSection.classList.remove('hidden');
+                            downloadBtn.href = data.download_url;
+                            downloadFileName.textContent = `Download ${data.file_name || 'Results'}`;
+                        }
+
                         uploadBtn.disabled = false;
                     } else if (data.status === 'error') {
                         stopPolling();

@@ -241,17 +241,22 @@ def callback(job_id):
 @app.route('/api/progress/<job_id>')
 def get_progress(job_id):
     """Get job progress from Supabase database"""
+    print(f"[DEBUG] Progress request for job_id: {job_id}")
+
     sb = get_supabase()
     if sb is None:
+        print("[DEBUG] Supabase client is None")
         return jsonify({'status': 'not_found', 'message': 'Supabase not configured'}), 404
 
     try:
+        print(f"[DEBUG] Querying Supabase for job_id: {job_id}")
         response = sb.table('job_progress') \
             .select('*') \
             .eq('job_id', job_id) \
             .single() \
             .execute()
 
+        print(f"[DEBUG] Supabase response: {response.data}")
         if response.data:
             data = response.data
             return jsonify({
@@ -277,6 +282,21 @@ def health():
         'webhook_configured': bool(N8N_WEBHOOK_URL),
         'supabase_configured': bool(SUPABASE_URL and SUPABASE_KEY),
         'active_jobs': len([j for j in jobs.values() if j['status'] == 'processing'])
+    })
+
+
+@app.route('/debug/jobs')
+def debug_jobs():
+    """Debug endpoint to see current job IDs"""
+    return jsonify({
+        'active_jobs': {
+            job_id: {
+                'status': job['status'],
+                'filename': job['filename'],
+                'created_at': job['created_at']
+            }
+            for job_id, job in jobs.items()
+        }
     })
 
 

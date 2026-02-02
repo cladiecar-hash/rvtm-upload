@@ -7,7 +7,6 @@ from flask import Flask, render_template, request, jsonify, Response
 import requests
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
-from supabase import create_client
 
 load_dotenv()
 
@@ -18,10 +17,23 @@ app.config['UPLOAD_EXTENSIONS'] = ['.xlsx', '.xls']
 # n8n webhook URL from environment variable
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', 'https://your-n8n.com/webhook/rvtm-upload')
 
-# Supabase configuration
+# Supabase configuration (lazy initialization)
 SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://oxcqxvjibbqcprnhwrcb.supabase.co')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im94Y3F4dmppYmJxY3Bybmh3cmNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1Njc5NzgsImV4cCI6MjA3NzE0Mzk3OH0.qFp0C6OoJfleu6vTlBAxd37NkpCRLAMuGLiqiGOdSZU')
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = None
+
+
+def get_supabase():
+    """Lazy initialization of Supabase client"""
+    global supabase
+    if supabase is None:
+        try:
+            from supabase import create_client
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception as e:
+            print(f"Failed to initialize Supabase: {e}")
+            return None
+    return supabase
 
 # Get the app's public URL for callback (Railway sets this)
 APP_URL = os.getenv('RAILWAY_PUBLIC_DOMAIN', os.getenv('APP_URL', 'localhost:5000'))
@@ -229,8 +241,12 @@ def callback(job_id):
 @app.route('/api/progress/<job_id>')
 def get_progress(job_id):
     """Get job progress from Supabase database"""
+    sb = get_supabase()
+    if sb is None:
+        return jsonify({'status': 'not_found', 'message': 'Supabase not configured'}), 404
+
     try:
-        response = supabase.table('job_progress') \
+        response = sb.table('job_progress') \
             .select('*') \
             .eq('job_id', job_id) \
             .single() \

@@ -7,6 +7,7 @@ from flask import Flask, render_template, request, jsonify, Response
 import requests
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
+from supabase import create_client
 
 load_dotenv()
 
@@ -16,6 +17,11 @@ app.config['UPLOAD_EXTENSIONS'] = ['.xlsx', '.xls']
 
 # n8n webhook URL from environment variable
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', 'https://your-n8n.com/webhook/rvtm-upload')
+
+# Supabase configuration
+SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://oxcqxvjibbqcprnhwrcb.supabase.co')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im94Y3F4dmppYmJxY3Bybmh3cmNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1Njc5NzgsImV4cCI6MjA3NzE0Mzk3OH0.qFp0C6OoJfleu6vTlBAxd37NkpCRLAMuGLiqiGOdSZU')
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Get the app's public URL for callback (Railway sets this)
 APP_URL = os.getenv('RAILWAY_PUBLIC_DOMAIN', os.getenv('APP_URL', 'localhost:5000'))
@@ -220,11 +226,40 @@ def callback(job_id):
     return jsonify({'status': 'success', 'message': 'Callback received'})
 
 
+@app.route('/api/progress/<job_id>')
+def get_progress(job_id):
+    """Get job progress from Supabase database"""
+    try:
+        response = supabase.table('job_progress') \
+            .select('*') \
+            .eq('job_id', job_id) \
+            .single() \
+            .execute()
+
+        if response.data:
+            data = response.data
+            return jsonify({
+                'status': data.get('status', 'pending'),
+                'current_batch': data.get('current_batch', 0),
+                'total_batches': data.get('total_batches', 0),
+                'processed_requirements': data.get('processed_requirements', 0),
+                'total_requirements': data.get('total_requirements', 0),
+                'percent_complete': data.get('percent_complete', 0),
+                'updated_at': data.get('updated_at'),
+                'error_message': data.get('error_message')
+            })
+        return jsonify({'status': 'not_found', 'message': 'Job not found in database'}), 404
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/health')
 def health():
     return jsonify({
         'status': 'healthy',
         'webhook_configured': bool(N8N_WEBHOOK_URL),
+        'supabase_configured': bool(SUPABASE_URL and SUPABASE_KEY),
         'active_jobs': len([j for j in jobs.values() if j['status'] == 'processing'])
     })
 

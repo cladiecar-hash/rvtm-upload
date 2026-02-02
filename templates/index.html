@@ -62,11 +62,33 @@
             <!-- Processing Status -->
             <div id="processingStatus" class="hidden mt-4">
                 <div class="bg-blue-900/30 border border-blue-500 rounded-lg p-4">
-                    <div class="flex items-center">
+                    <div class="flex items-center mb-3">
                         <i class="fas fa-spinner animate-spin text-blue-400 text-2xl mr-3"></i>
-                        <div>
+                        <div class="flex-1">
                             <p class="text-blue-300 font-medium" id="processingMessage">Processing file...</p>
                             <p class="text-blue-400/70 text-sm" id="processingTime">Elapsed: 0s</p>
+                        </div>
+                    </div>
+                    <!-- Progress Details -->
+                    <div id="progressDetails" class="hidden">
+                        <div class="mb-2">
+                            <div class="flex justify-between text-sm text-gray-400 mb-1">
+                                <span>Overall Progress</span>
+                                <span id="progressPercentText">0%</span>
+                            </div>
+                            <div class="w-full bg-gray-700 rounded-full h-3">
+                                <div id="dbProgressBar" class="bg-blue-500 h-3 rounded-full transition-all duration-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 text-sm mt-3">
+                            <div class="bg-gray-800/50 rounded p-2">
+                                <span class="text-gray-500">Batch:</span>
+                                <span class="text-white ml-1" id="batchProgress">0/0</span>
+                            </div>
+                            <div class="bg-gray-800/50 rounded p-2">
+                                <span class="text-gray-500">Requirements:</span>
+                                <span class="text-white ml-1" id="reqProgress">0/0</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -149,7 +171,12 @@
         let selectedFile = null;
         let currentJobId = null;
         let pollingInterval = null;
+        let progressPollingInterval = null;
         let startTime = null;
+        let lastUpdatedAt = null;
+        let lastChangeTime = null;
+        const STALE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes timeout
+        const PROGRESS_POLL_INTERVAL = 10000; // 10 seconds
 
         // Click to browse
         dropZone.addEventListener('click', () => fileInput.click());
@@ -286,6 +313,9 @@
         });
 
         function startPolling() {
+            lastChangeTime = Date.now();
+            lastUpdatedAt = null;
+
             // Update elapsed time every second
             const timeInterval = setInterval(() => {
                 if (!startTime) {
@@ -294,9 +324,19 @@
                 }
                 const elapsed = Math.floor((Date.now() - startTime) / 1000);
                 processingTime.textContent = `Elapsed: ${formatElapsedTime(elapsed)}`;
+
+                // Check for stale timeout
+                if (lastChangeTime && (Date.now() - lastChangeTime) > STALE_TIMEOUT_MS) {
+                    stopPolling();
+                    clearInterval(timeInterval);
+                    processingStatus.classList.add('hidden');
+                    resultCard.classList.remove('hidden');
+                    showError('Processing timeout: No progress updates for 3 minutes. The job may have stalled.');
+                    uploadBtn.disabled = false;
+                }
             }, 1000);
 
-            // Poll status every 3 seconds
+            // Poll app status every 3 seconds (for completion/callback)
             pollingInterval = setInterval(async () => {
                 if (!currentJobId) {
                     stopPolling();
@@ -307,8 +347,6 @@
                 try {
                     const response = await fetch(`/status/${currentJobId}`);
                     const data = await response.json();
-
-                    processingMessage.textContent = data.message || 'Processing...';
 
                     if (data.status === 'completed') {
                         stopPolling();
@@ -344,9 +382,78 @@
                         uploadBtn.disabled = false;
                     }
                 } catch (error) {
-                    console.error('Polling error:', error);
+                    console.error('Status polling error:', error);
                 }
             }, 3000);
+
+            // Poll Supabase progress every 10 seconds
+            progressPollingInterval = setInterval(async () => {
+                if (!currentJobId) return;
+
+                try {
+                    const response = await fetch(`/api/progress/${currentJobId}`);
+                    const data = await response.json();
+
+                    if (data.status === 'not_found') {
+                        // Job not yet in DB, keep waiting
+                        return;
+                    }
+
+                    // Check if data has changed
+                    if (data.updated_at && data.updated_at !== lastUpdatedAt) {
+                        lastUpdatedAt = data.updated_at;
+                        lastChangeTime = Date.now();
+                    }
+
+                    // Update progress UI
+                    updateProgressUI(data);
+
+                    // Handle completion or error from DB
+                    if (data.status === 'completed') {
+                        // Let the /status endpoint handle the final result
+                        processingMessage.textContent = 'Analysis complete, fetching results...';
+                    } else if (data.status === 'error') {
+                        stopPolling();
+                        clearInterval(timeInterval);
+                        processingStatus.classList.add('hidden');
+                        resultCard.classList.remove('hidden');
+                        showError(data.error_message || 'Processing failed');
+                        uploadBtn.disabled = false;
+                    }
+
+                } catch (error) {
+                    console.error('Progress polling error:', error);
+                }
+            }, PROGRESS_POLL_INTERVAL);
+        }
+
+        function updateProgressUI(data) {
+            const progressDetails = document.getElementById('progressDetails');
+            const dbProgressBar = document.getElementById('dbProgressBar');
+            const progressPercentText = document.getElementById('progressPercentText');
+            const batchProgress = document.getElementById('batchProgress');
+            const reqProgress = document.getElementById('reqProgress');
+
+            // Show progress details if we have data
+            if (data.total_batches > 0 || data.total_requirements > 0) {
+                progressDetails.classList.remove('hidden');
+
+                // Update percentage bar
+                const percent = data.percent_complete || 0;
+                dbProgressBar.style.width = `${percent}%`;
+                progressPercentText.textContent = `${percent}%`;
+
+                // Update batch progress
+                batchProgress.textContent = `${data.current_batch || 0}/${data.total_batches || 0}`;
+
+                // Update requirements progress
+                reqProgress.textContent = `${data.processed_requirements || 0}/${data.total_requirements || 0}`;
+
+                // Update message based on status
+                if (data.status === 'processing') {
+                    processingMessage.textContent = `Analyzing batch ${data.current_batch} of ${data.total_batches}...`;
+                }
+            }
         }
 
         function stopPolling() {
@@ -354,8 +461,14 @@
                 clearInterval(pollingInterval);
                 pollingInterval = null;
             }
+            if (progressPollingInterval) {
+                clearInterval(progressPollingInterval);
+                progressPollingInterval = null;
+            }
             currentJobId = null;
             startTime = null;
+            lastUpdatedAt = null;
+            lastChangeTime = null;
         }
 
         function showSuccessFromResult(result) {

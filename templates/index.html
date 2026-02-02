@@ -69,8 +69,8 @@
                             <p class="text-blue-400/70 text-sm" id="processingTime">Elapsed: 0s</p>
                         </div>
                     </div>
-                    <!-- Progress Details -->
-                    <div id="progressDetails" class="hidden">
+                    <!-- Progress Details - Always visible during processing -->
+                    <div id="progressDetails">
                         <div class="mb-2">
                             <div class="flex justify-between text-sm text-gray-400 mb-1">
                                 <span>Overall Progress</span>
@@ -83,11 +83,11 @@
                         <div class="grid grid-cols-2 gap-2 text-sm mt-3">
                             <div class="bg-gray-800/50 rounded p-2">
                                 <span class="text-gray-500">Batch:</span>
-                                <span class="text-white ml-1" id="batchProgress">0/0</span>
+                                <span class="text-white ml-1" id="batchProgress">--/--</span>
                             </div>
                             <div class="bg-gray-800/50 rounded p-2">
                                 <span class="text-gray-500">Requirements:</span>
-                                <span class="text-white ml-1" id="reqProgress">0/0</span>
+                                <span class="text-white ml-1" id="reqProgress">--/--</span>
                             </div>
                         </div>
                     </div>
@@ -224,6 +224,15 @@
             resultCard.classList.add('hidden');
             processingStatus.classList.add('hidden');
             document.getElementById('downloadSection').classList.add('hidden');
+            // Reset progress UI
+            resetProgressUI();
+        }
+
+        function resetProgressUI() {
+            document.getElementById('dbProgressBar').style.width = '0%';
+            document.getElementById('progressPercentText').textContent = '0%';
+            document.getElementById('batchProgress').textContent = '--/--';
+            document.getElementById('reqProgress').textContent = '--/--';
         }
 
         function formatFileSize(bytes) {
@@ -428,31 +437,31 @@
         }
 
         function updateProgressUI(data) {
-            const progressDetails = document.getElementById('progressDetails');
             const dbProgressBar = document.getElementById('dbProgressBar');
             const progressPercentText = document.getElementById('progressPercentText');
             const batchProgress = document.getElementById('batchProgress');
             const reqProgress = document.getElementById('reqProgress');
 
-            // Show progress details if we have data
-            if (data.total_batches > 0 || data.total_requirements > 0) {
-                progressDetails.classList.remove('hidden');
+            // Update percentage bar
+            const percent = data.percent_complete || 0;
+            dbProgressBar.style.width = `${percent}%`;
+            progressPercentText.textContent = `${percent}%`;
 
-                // Update percentage bar
-                const percent = data.percent_complete || 0;
-                dbProgressBar.style.width = `${percent}%`;
-                progressPercentText.textContent = `${percent}%`;
+            // Update batch progress
+            const currentBatch = data.current_batch || 0;
+            const totalBatches = data.total_batches || 0;
+            batchProgress.textContent = totalBatches > 0 ? `${currentBatch}/${totalBatches}` : '--/--';
 
-                // Update batch progress
-                batchProgress.textContent = `${data.current_batch || 0}/${data.total_batches || 0}`;
+            // Update requirements progress
+            const processedReq = data.processed_requirements || 0;
+            const totalReq = data.total_requirements || 0;
+            reqProgress.textContent = totalReq > 0 ? `${processedReq}/${totalReq}` : '--/--';
 
-                // Update requirements progress
-                reqProgress.textContent = `${data.processed_requirements || 0}/${data.total_requirements || 0}`;
-
-                // Update message based on status
-                if (data.status === 'processing') {
-                    processingMessage.textContent = `Analyzing batch ${data.current_batch} of ${data.total_batches}...`;
-                }
+            // Update message based on status
+            if (data.status === 'processing' && totalBatches > 0) {
+                processingMessage.textContent = `Analyzing batch ${currentBatch} of ${totalBatches}...`;
+            } else if (data.status === 'pending') {
+                processingMessage.textContent = 'Waiting for n8n to start processing...';
             }
         }
 

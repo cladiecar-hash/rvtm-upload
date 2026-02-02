@@ -17,31 +17,41 @@ app.config['UPLOAD_EXTENSIONS'] = ['.xlsx', '.xls']
 # n8n webhook URL from environment variable
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', 'https://your-n8n.com/webhook/rvtm-upload')
 
-# Supabase configuration (lazy initialization)
+# Supabase configuration (using REST API directly)
 SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://oxcqxvjibbqcprnhwrcb.supabase.co')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im94Y3F4dmppYmJxY3Bybmh3cmNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1Njc5NzgsImV4cCI6MjA3NzE0Mzk3OH0.qFp0C6OoJfleu6vTlBAxd37NkpCRLAMuGLiqiGOdSZU')
-supabase = None
-supabase_error = None
 
 
-def get_supabase():
-    """Lazy initialization of Supabase client"""
-    global supabase, supabase_error
-    if supabase is None and supabase_error is None:
-        try:
-            from supabase import create_client
-            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            print(f"[DEBUG] Supabase initialized successfully")
-        except Exception as e:
-            supabase_error = str(e)
-            print(f"Failed to initialize Supabase: {e}")
-            return None
-    return supabase
+def supabase_query(table, filters=None, select='*', single=False):
+    """Query Supabase using REST API directly"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
+    headers = {
+        'apikey': SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+    }
 
-def get_supabase_error():
-    """Get the Supabase initialization error if any"""
-    return supabase_error
+    params = {'select': select}
+    if filters:
+        for key, value in filters.items():
+            params[key] = f'eq.{value}'
+
+    if single:
+        headers['Accept'] = 'application/vnd.pgrst.object+json'
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        if response.status_code == 200:
+            return {'data': response.json(), 'error': None}
+        elif response.status_code == 406:
+            # No rows found for single query
+            return {'data': None, 'error': None}
+        else:
+            return {'data': None, 'error': f'HTTP {response.status_code}: {response.text}'}
+    except Exception as e:
+        return {'data': None, 'error': str(e)}
 
 # Get the app's public URL for callback (Railway sets this)
 APP_URL = os.getenv('RAILWAY_PUBLIC_DOMAIN', os.getenv('APP_URL', 'localhost:5000'))
@@ -251,37 +261,27 @@ def get_progress(job_id):
     """Get job progress from Supabase database"""
     print(f"[DEBUG] Progress request for job_id: {job_id}")
 
-    sb = get_supabase()
-    if sb is None:
-        error = get_supabase_error() or 'Unknown error'
-        print(f"[DEBUG] Supabase client is None, error: {error}")
-        return jsonify({'status': 'not_found', 'message': f'Supabase error: {error}'}), 404
+    result = supabase_query('job_progress', filters={'job_id': job_id}, single=True)
 
-    try:
-        print(f"[DEBUG] Querying Supabase for job_id: {job_id}")
-        response = sb.table('job_progress') \
-            .select('*') \
-            .eq('job_id', job_id) \
-            .single() \
-            .execute()
+    if result['error']:
+        print(f"[DEBUG] Supabase error: {result['error']}")
+        return jsonify({'status': 'error', 'message': result['error']}), 500
 
-        print(f"[DEBUG] Supabase response: {response.data}")
-        if response.data:
-            data = response.data
-            return jsonify({
-                'status': data.get('status', 'pending'),
-                'current_batch': data.get('current_batch', 0),
-                'total_batches': data.get('total_batches', 0),
-                'processed_requirements': data.get('processed_requirements', 0),
-                'total_requirements': data.get('total_requirements', 0),
-                'percent_complete': data.get('percent_complete', 0),
-                'updated_at': data.get('updated_at'),
-                'error_message': data.get('error_message')
-            })
-        return jsonify({'status': 'not_found', 'message': 'Job not found in database'}), 404
+    print(f"[DEBUG] Supabase response: {result['data']}")
+    if result['data']:
+        data = result['data']
+        return jsonify({
+            'status': data.get('status', 'pending'),
+            'current_batch': data.get('current_batch', 0),
+            'total_batches': data.get('total_batches', 0),
+            'processed_requirements': data.get('processed_requirements', 0),
+            'total_requirements': data.get('total_requirements', 0),
+            'percent_complete': data.get('percent_complete', 0),
+            'updated_at': data.get('updated_at'),
+            'error_message': data.get('error_message')
+        })
 
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'status': 'not_found', 'message': 'Job not found in database'}), 404
 
 
 @app.route('/health')
@@ -312,33 +312,25 @@ def debug_jobs():
 @app.route('/debug/supabase')
 def debug_supabase():
     """Debug endpoint to check Supabase connection"""
-    sb = get_supabase()
-    error = get_supabase_error()
+    # Try a simple query using REST API
+    result = supabase_query('job_progress', select='id')
 
-    if sb is None:
+    if result['error']:
         return jsonify({
             'status': 'error',
             'connected': False,
-            'error': error,
+            'error': result['error'],
             'url_configured': bool(SUPABASE_URL),
             'key_configured': bool(SUPABASE_KEY)
         })
 
-    # Try a simple query
-    try:
-        response = sb.table('job_progress').select('id').limit(1).execute()
-        return jsonify({
-            'status': 'ok',
-            'connected': True,
-            'test_query': 'success',
-            'url': SUPABASE_URL
-        })
-    except Exception as e:
-        return jsonify({
-            'status': 'partial',
-            'connected': True,
-            'test_query_error': str(e)
-        })
+    return jsonify({
+        'status': 'ok',
+        'connected': True,
+        'test_query': 'success',
+        'rows_found': len(result['data']) if result['data'] else 0,
+        'url': SUPABASE_URL
+    })
 
 
 if __name__ == '__main__':

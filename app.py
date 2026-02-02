@@ -21,19 +21,27 @@ N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL', 'https://your-n8n.com/webhook/rvt
 SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://oxcqxvjibbqcprnhwrcb.supabase.co')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im94Y3F4dmppYmJxY3Bybmh3cmNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1Njc5NzgsImV4cCI6MjA3NzE0Mzk3OH0.qFp0C6OoJfleu6vTlBAxd37NkpCRLAMuGLiqiGOdSZU')
 supabase = None
+supabase_error = None
 
 
 def get_supabase():
     """Lazy initialization of Supabase client"""
-    global supabase
-    if supabase is None:
+    global supabase, supabase_error
+    if supabase is None and supabase_error is None:
         try:
             from supabase import create_client
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            print(f"[DEBUG] Supabase initialized successfully")
         except Exception as e:
+            supabase_error = str(e)
             print(f"Failed to initialize Supabase: {e}")
             return None
     return supabase
+
+
+def get_supabase_error():
+    """Get the Supabase initialization error if any"""
+    return supabase_error
 
 # Get the app's public URL for callback (Railway sets this)
 APP_URL = os.getenv('RAILWAY_PUBLIC_DOMAIN', os.getenv('APP_URL', 'localhost:5000'))
@@ -245,8 +253,9 @@ def get_progress(job_id):
 
     sb = get_supabase()
     if sb is None:
-        print("[DEBUG] Supabase client is None")
-        return jsonify({'status': 'not_found', 'message': 'Supabase not configured'}), 404
+        error = get_supabase_error() or 'Unknown error'
+        print(f"[DEBUG] Supabase client is None, error: {error}")
+        return jsonify({'status': 'not_found', 'message': f'Supabase error: {error}'}), 404
 
     try:
         print(f"[DEBUG] Querying Supabase for job_id: {job_id}")
@@ -298,6 +307,38 @@ def debug_jobs():
             for job_id, job in jobs.items()
         }
     })
+
+
+@app.route('/debug/supabase')
+def debug_supabase():
+    """Debug endpoint to check Supabase connection"""
+    sb = get_supabase()
+    error = get_supabase_error()
+
+    if sb is None:
+        return jsonify({
+            'status': 'error',
+            'connected': False,
+            'error': error,
+            'url_configured': bool(SUPABASE_URL),
+            'key_configured': bool(SUPABASE_KEY)
+        })
+
+    # Try a simple query
+    try:
+        response = sb.table('job_progress').select('id').limit(1).execute()
+        return jsonify({
+            'status': 'ok',
+            'connected': True,
+            'test_query': 'success',
+            'url': SUPABASE_URL
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'partial',
+            'connected': True,
+            'test_query_error': str(e)
+        })
 
 
 if __name__ == '__main__':
